@@ -1,0 +1,17 @@
+name: Block PR if dependent on another PR
+
+on:
+  pull_request:
+
+permissions:
+  issues: read
+  pull-requests: read
+
+jobs:
+  check_dependencies:
+    runs-on: ubuntu-latest
+    name: Check Dependencies
+    steps:
+    - uses: gregsdennis/dependencies-action@main
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
