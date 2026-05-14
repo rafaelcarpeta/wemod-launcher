@@ -1,0 +1,20 @@
+[project]
+name = "wand-launcher"
+dynamic = ["version"]
+description = "A wrapper around the Wand game trainer program for Linux/Steam Deck"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+wand-launcher = "wand_launcher.frontend:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools_scm]
+
