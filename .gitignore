@@ -1,9 +1,4 @@
-.vscode/
 .cache/
-wemod_data/
-wemod_venv/
-__pycache__/
-wemod.conf
-wemod.log
-winetricks
+*__pycache__*/
 pip.pyz
+winetricks
