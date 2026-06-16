@@ -65,7 +65,7 @@ The bootstrap follows this order:
 3. **Interface** — detected from settings
 4. **Root guard** — uses settings + interface
 5. **SettingsManager.load_all()** — config files, env vars, metadata
-6. **StepRunner** — wraps the three remaining objects (settings, interface, log)
+6. **StepRunner** — wraps the three remaining objects (settings, log, interface)
 
 ### SettingsManager (First — Basic Init)
 
@@ -96,6 +96,8 @@ SettingsManager does **not** load config files yet — that happens after the ro
 
 Created with a reference to **settings** (not a separate PathManager). Reads `settings.log_path` (`~/.cache/wand/launcher.log`) and writes the file header there. Implements a typed event bus:
 
+> This is a placeholder implementation. The final version may use Python's built-in `logging` module if that makes more sense. Log output should include timestamps and structured type/level fields.
+
 - `log.info(type, message)` → shorthand for `log.emit(type, "info", message)`
 - `log.error(type, message)` → shorthand for `log.emit(type, "error", message)`
 - `log.emit(type, level, message)` → full form, used for custom levels
@@ -121,7 +123,7 @@ The interface protocol currently includes:
 
 ### Root Guard (Fourth)
 
-`check_root(interface, settings)` runs before `settings.load_all()`. If `os.geteuid() == 0` and `settings.is_force_root_active` is False, it shows a message and calls `sys.exit(1)`. The interface is passed so the message is visible in both GUI and CLI mode. Config files are not loaded until after this check passes — no point reading config if we're about to exit.
+`check_root(settings, log, interface)` runs before `settings.load_all()`. If `os.geteuid() == 0` and `settings.is_force_root_active` is False, it shows a message and calls `sys.exit(1)`. Config files are not loaded until after this check passes — no point reading config if we're about to exit.
 
 ### SettingsManager.load_all() (Fifth)
 
@@ -138,12 +140,12 @@ Settings are exposed as flat attributes (`settings.is_cli`, `settings.download_u
 
 ### Step Runner (After Bootstrap)
 
-After bootstrap, a `StepRunner` is created with the three core objects (settings, interface, log). Every action phase goes through the runner, which wraps `step()` or `step_code()`:
+After bootstrap, a `StepRunner` is created with the three core objects (settings, log, interface). Every action phase goes through the runner, which wraps `step()` or `step_code()`:
 
 - `step()` — catches exceptions, calls `interface.error_msg_and_log(type, msg)`, returns True on failure
 - `step_code()` — same but returns `(failed, code)` for phases that produce an exit code
 
-All three objects are always passed — every phase receives `(settings, interface, log)` consistently. Phase functions access paths through the settings object and may show messages or progress via the interface.
+All three objects are always passed — every phase receives `(settings, log, interface)` consistently, matching the bootstrap creation order. Phase functions access paths through settings, emit events through log, and show messages or progress via the interface.
 
 ---
 

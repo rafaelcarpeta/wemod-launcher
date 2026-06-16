@@ -13,7 +13,7 @@ The main flow is simple — the launcher is essentially a fancy argument parser.
 - **SettingsManager** — basic init: parses `sys.argv` and computes XDG paths. No config files loaded yet.
 - **LogManager** — takes settings (reads log path from it), starts the log file.
 - **Interface** — detected from settings flags: PyQt6 by default, CLI if `--cli` or `--no-prompt`.
-- **Root guard** — checks `os.geteuid()` and `--force-root`, exits early if running as root without the flag.
+- **Root guard** — `check_root(settings, log, interface)`, checks `os.geteuid()` and `--force-root`, exits early if running as root without the flag.
 - **SettingsManager.load_all()** — loads global config (`config.json`), game config (`games.json`), and metadata. Merge priority: CLI args > env vars > game config > global config > hardcoded defaults.
 - Enter the main execution block
 
