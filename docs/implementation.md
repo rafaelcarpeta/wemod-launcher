@@ -138,12 +138,12 @@ Settings are exposed as flat attributes (`settings.is_cli`, `settings.download_u
 
 ### Step Runner (After Bootstrap)
 
-After bootstrap, a `StepRunner` is created with three core objects (settings, interface, log). Every action phase goes through the runner, which wraps `step()` or `step_code()`:
+After bootstrap, a `StepRunner` is created with the three core objects (settings, interface, log). Every action phase goes through the runner, which wraps `step()` or `step_code()`:
 
 - `step()` — catches exceptions, calls `interface.error_msg_and_log(type, msg)`, returns True on failure
 - `step_code()` — same but returns `(failed, code)` for phases that produce an exit code
 
-Boolean flags (s, i, lg) control which core objects get passed to the phase function. Phase functions receive `(settings, interface, log)` by default and access paths through the settings object. This keeps calls concise and makes the parameter contract explicit at the call site.
+All three objects are always passed — every phase receives `(settings, interface, log)` consistently. Phase functions access paths through the settings object and may show messages or progress via the interface.
 
 ---
 
