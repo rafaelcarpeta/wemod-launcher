@@ -12,13 +12,13 @@ The main flow is simple — the launcher is essentially a fancy argument parser.
 
 - Run root checks and resolve any pending updates
 - Migration manager checks the schema version in `~/.local/share/wand/metadata.json` and runs pending migrations if needed
-- Initialize the **SettingsManager** — a unified interface over CLI args, environment variables, config files, and XDG paths. Everything reads settings from here.
+- Initialize the **SettingsManager** — a unified interface over CLI args, environment variables, game config, global config, and XDG paths. Merge priority: CLI args > env vars > game config (`games.json`, game paths as IDs) > global config (`config.json`) > hardcoded defaults. Everything reads settings from here.
 - Detect the user interface — PyQt6 by default, CLI if `--cli` or `--no-prompt` flags are set
 - Enter the main execution block
 
 ### Argument Parsing
 
-- The ArgManager (part of SettingsManager) wraps `sys.argv` once
+- The ArgManager wraps `sys.argv` once (separate from SettingsManager, which consumes it later)
 - Analyze the arguments for wine/proton to find the target game
 
 ### Download the App
@@ -38,14 +38,15 @@ The main flow is simple — the launcher is essentially a fancy argument parser.
 
 ### Monitor Launch
 
-> The monitor process will live in a separate repository — it's a standalone
-> binary that communicates via TCP/JSON. The launcher only needs to launch it
-> and read its exit code.
+> The monitor is a separate binary in its own repository — this section covers
+> the launcher side only. The launcher downloads `monitor.exe` from the
+> monitor's GitHub releases, sends a `LaunchConfig` via TCP/JSON, and reads
+> the exit code.
 
-- Replace the command to run the monitor instead of the game
-- Pass the game exe path to the monitor via IPC as JSON
-- Run the monitor with the wine tool (proton in steam) which receives the game args
-- The monitor starts both the game and wand, then exits
+- Download `monitor.exe` from the monitor's GitHub releases
+- Send a `LaunchConfig` via TCP/JSON with the game exe path, wand exe path, and lifecycle instructions
+- Wait for the monitor to report `session_complete` with the game's exit code
+- Return that exit code as the launcher's own exit code
 - See [The Monitor Start File](#the-monitor-start-file) for details
 
 ### Troubleshooter
@@ -66,7 +67,9 @@ To use wand the app exe needs to be in place. Downloads and temporary caches go 
 ### Installing the App
 
 - Check if the app exe exists
-- If not, run the setup — downloads and extracts the app to `~/.local/share/wand/bin/` so all prefixes can use it
+- If not, download the archive from the URL in `metadata.json`
+- Verify the downloaded archive against its reported checksum (provided by the online repo)
+- Extract to `~/.cache/wand/` then copy the app to `~/.local/share/wand/bin/` so all prefixes can use it
 - The exe contains all app files (dependencies are handled separately during prefix setup)
 
 ---
@@ -110,7 +113,7 @@ Return to [The Main Flow](#the-main-flow) after completion.
 After the prefix is set up, the app data needs to be linked to the shared storage at `~/.local/share/wand/`.
 
 - Copy the app data folder to `~/.local/share/wand/login/`
-- If it doesn't exist, create an empty folder there
+- If the shared store already has data and the prefix also has data, prompt the user to pick which copy wins
 - Symlink the app's data folder inside the prefix to that central `login` folder
 - Now all games share the same app data — synced by design
 
@@ -123,14 +126,11 @@ After the prefix is set up, the app data needs to be linked to the shared storag
 
 ## The Monitor Start File
 
-The monitor is minimal — its job is process management inside the Wine/Proton environment:
+The monitor is a separate binary (different repo). From the launcher's perspective:
 
-- Receive a `LaunchConfig` via TCP from the launcher
-- The config defines which processes to start, in what order, and dependency rules
-- Connect to the launcher on the given port
-- Start wand.exe (or another app defined in the config)
-- Start the game executable and wait
-- On game exit, send a `session_complete` event to the launcher
-- The launcher cleans up and the monitor exits
+- Download `monitor.exe` from the monitor's own GitHub releases (separate repo from both launcher and wand app)
+- Send a structured `LaunchConfig` via TCP/JSON — defines game exe path, wand exe path, start order, dependencies, and shutdown rules
+- Wait for the monitor to respond with `session_complete` containing the game's exit code
+- Return that exit code as the launcher's own exit code
 
-This replaces the old bat file approach. Instead of a hardcoded batch script, the monitor uses a config-driven system where the launcher sends a structured `LaunchConfig` via JSON over TCP. This means the monitor is not limited to wand — it can manage any set of processes with proper lifecycle handling, dependencies, and startup order.
+The monitor replaces the old bat file approach with a config-driven protocol. The launcher only worries about building the config and reading the result — the monitor handles all process lifecycle inside Wine/Proton.

@@ -4,6 +4,58 @@
 
 The launcher is a sequential pipeline: bootstrap core services, run action phases, show the troubleshooter if anything failed. Every phase is wrapped in a guard that catches exceptions, logs them with type and message, and shows a user-facing error notification. Non-fatal errors in one phase don't stop later phases from running.
 
+## Initial File Structure
+
+Relative to `src/wand_launcher/`:
+
+```
+./__init__.py
+./__main__.py                  # python -m wand_launcher → launcher.main()
+./launcher.py                  # bootstrap → _run_flow() → troubleshooter
+./core/__init__.py
+./core/args.py                 # ArgManager (sys.argv wrapper)
+./core/guards.py               # step(), step_code(), check_root
+./core/paths.py                # PathManager (XDG paths)
+./core/runner.py               # StepRunner (step/step_code convenience)
+./core/settings.py             # SettingsManager (tiered config merge)
+./logging/__init__.py
+./logging/event_bus.py         # LogManager with typed emit/subscribe
+./logging/handlers.py          # File, console, UI log handlers
+./migrations/__init__.py       # apply_migrations
+./migrations/...               # individual migration scripts
+./monitor/__init__.py          # launch_monitor
+./monitor/protocol.py          # LaunchConfig schema, session_complete
+./monitor/ipc/__init__.py
+./prefixes/__init__.py
+./prefixes/manager.py          # setup_prefix (orchestrator)
+./prefixes/scanner.py          # scan sibling prefixes
+./prefixes/matcher.py          # best-match logic
+./prefixes/builder.py          # winetricks-based build
+./prefixes/downloader.py       # download pre-built prefix
+./troubleshooter/__init__.py   # run_troubleshooter
+./troubleshooter/...           # GUI/CLI variants
+./ui/__init__.py
+./ui/detect.py                 # detect_interface
+./ui/base.py                   # abstract Interface protocol
+./ui/cli.py                    # CLIInterface
+./ui/gui/__init__.py
+./ui/gui/app.py
+./ui/gui/main_window.py
+./ui/gui/dialogs.py
+./ui/gui/progress.py
+./updates/__init__.py          # update_if_needed
+./updates/binary.py            # AppImage/production updater
+./updates/dev.py               # git-pull source updater
+./utils/__init__.py
+./utils/download.py            # unified download service
+./utils/path_utils.py          # Unix↔Wine path conversion, symlink resolution
+./wand/__init__.py
+./wand/installer.py            # ensure_app (download & verify archive)
+./wand/data_sync.py            # sync_app_data (login/ dir symlink)
+```
+
+> This is the initial file structure and is subject to change based on project needs and scope.
+
 ---
 
 ## Bootstrap Sequence
@@ -32,13 +84,15 @@ Subscribers can filter by type (e.g. only `launcher.flow.*`), level, or both. Th
 
 ### ArgManager
 
-Wraps `sys.argv` once, early in bootstrap. Exposes parsed flags as attributes:
+Wraps `sys.argv` once, early in bootstrap. Currently exposes a small set of flags:
 
 - `is_force_root_active` — whether `--force-root` was passed
 - `is_cli` — whether `--cli` was passed
 - `is_no_prompt` — whether `--no-prompt` was passed
 - `has_post_update` — whether the launcher was re-invoked after a self-update
 - Any remaining positional args (used for game exe path, prefix path, etc.)
+
+Most flags are not yet finalised — future args will be added as settings require them. `--help` support is an optional goal still under evaluation.
 
 ArgManager only parses CLI flags. It does not merge with config files or env vars — that's SettingsManager's job.
 
@@ -47,11 +101,18 @@ ArgManager only parses CLI flags. It does not merge with config files or env var
 The unified settings layer. Construction order matters:
 
 1. `SettingsManager(args)` — init from ArgManager only (CLI flags parsed but config not loaded yet)
-2. Later, `settings.load_config()` — merges env vars and config files
+2. Later, `settings.load_config()` — merges env vars, config files, and game-specific config
 
-Merge priority (highest wins): CLI args > env vars > config files > hardcoded defaults.
+Merge priority (highest wins):
+CLI args > env vars > game config > global config > hardcoded defaults.
 
-Config files are loaded from `~/.config/wand/`. The user-editable file is `config.json`. Auto-generated metadata is stored in `~/.local/share/wand/metadata.json` (version, URLs, download links, etc.). Settings are exposed as flat attributes (`settings.is_cli`, `settings.download_url`, etc.) — no nested dict access.
+**Global config** lives at `~/.config/wand/config.json` — user-editable, contains general launcher settings.
+
+**Game config** lives at `~/.config/wand/games.json` — maps game paths (used as IDs) to per-game overrides. A game may have no entry at all, partial settings, or full overrides.
+
+**Auto-generated metadata** is stored in `~/.local/share/wand/metadata.json` (version, URLs, download links, user agent, etc.). Some of these values are exposed through SettingsManager but are read-only — they can only be changed via the manifest file and are not meant to be edited by users. The settings layer enforces which keys are overridable and which are manifest-only.
+
+Settings are exposed as flat attributes (`settings.is_cli`, `settings.download_url`, etc.) — no nested dict access.
 
 ### Interface Detection
 
@@ -60,7 +121,9 @@ Config files are loaded from `~/.config/wand/`. The user-editable file is `confi
 - If `--cli` or `--no-prompt` flags are set → CLIInterface
 - Otherwise → GUIInterface (default)
 
-The interface implements a small protocol:
+The abstraction auto-routes to the correct implementation. Each interface lives in its own file and implements a shared protocol. More interface types may be added later.
+
+The interface protocol currently includes:
 
 - `show_message(text)` — display a message to the user (modal dialog or print)
 - `error_msg_and_log(type, text)` — log the type and text, then show the text
@@ -94,10 +157,10 @@ Checks for and applies launcher self-updates. Two modes:
 - A post-update marker is set so the re-invoked launcher knows an update just happened
 - The swap is atomic: download to temp, rename over old, then re-exec
 
-**Dev mode:**
-- Runs `git pull` in the repository directory
+**Run from source mode:**
+- Detected by running from a git repository (no AppImage, no binary release)
+- Runs `git pull` in the repository directory — only makes sense in a git context
 - Does not reset --hard — preserves local changes
-- Only triggers if the running version is a dev build (detected via version string or presence of `.git`)
 
 If the network is unreachable, the updater logs the error and continues silently — a failed update is not a fatal error.
 
@@ -120,10 +183,12 @@ After all migrations succeed, `metadata.json` is updated with the current schema
 
 Ensures the app exe exists at `~/.local/share/wand/bin/`. The logic:
 
-1. Check if the exe is already present and the checksum matches
-2. If missing or corrupted, download from the URL in `metadata.json`
-3. Extract the archive to `~/.cache/wand/` then copy the exe to `~/.local/share/wand/bin/`
-4. Verify the checksum of the extracted file
+1. Check if the exe is already present
+2. If missing, download the archive from the URL in `metadata.json`
+3. Verify the downloaded archive against its reported checksum (the checksum is provided by the online repo alongside the download link)
+4. Extract to `~/.cache/wand/` then copy the exe to `~/.local/share/wand/bin/`
+
+Checksum verification is done on the archive, not the extracted file — the online repo provides the archive checksum alongside the download link. Verifying the extracted binary would require pre-generating checksums for every version, storing them in the manifest, and keeping them in sync — it's simpler and sufficient to just verify the archive.
 
 Downloads use the unified download service (see Utilities section). The app exe is shared across all prefixes — it's installed once and every prefix uses the same binary.
 
@@ -178,23 +243,18 @@ Copy the app data folder from inside the prefix to `~/.local/share/wand/login/`.
 **Step 3: Symlink back**
 Remove the app data folder inside the prefix and replace it with a symlink pointing to `~/.local/share/wand/login/`. Now all games that use this launcher share the same app data — logins, settings, and cached data are synchronized by design.
 
-If the shared data already has files (from a previous run or another game), the sync preserves them — only new or changed files are copied.
+If both the prefix app data and the shared `login/` directory already have content (e.g. from a previous game), the launcher prompts the user to resolve the conflict: use the current game account (overwrites the shared store), use the existing shared data (overwrites the prefix copy), or exit.
 
 ### Monitor Launch
 
-The last action phase. Replaces the game command with the monitor process.
+The last action phase. From the launcher's perspective:
 
-The monitor is a separate binary that lives inside the Wine prefix (or is downloaded alongside the app). Its job is process lifecycle management:
+1. Download the monitor binary from the monitor's own GitHub releases (separate repo from both the launcher and the wand app)
+2. Send a `LaunchConfig` via TCP/JSON containing the game exe path, wand exe path, and lifecycle instructions (start order, dependencies, shutdown rules)
+3. Wait for the monitor to report `session_complete` with the game's exit code
+4. Return that exit code as the launcher's own exit code
 
-1. Receive a `LaunchConfig` via TCP/JSON from the launcher
-2. Start the app executable (wand.exe)
-3. Start the game executable
-4. Wait for the game to exit
-5. If wand is still running after the game exits, send a terminate signal
-6. Send a `session_complete` event to the launcher with the game's exit code
-7. Exit
-
-The launcher waits for the monitor's exit code and returns it as its own exit code. If the monitor cannot be started (missing binary, port in use, etc.), the phase reports failure and the troubleshooter runs.
+The monitor is a separate binary and lives in its own repository — this section only covers the launcher side of the interaction. If the monitor cannot be started (missing binary, port in use, etc.), the phase reports failure and the troubleshooter runs.
 
 ---
 
