@@ -4,7 +4,7 @@
 from typing import Any
 
 
-class GUIInterface:
+class CLIInterface:
     def __init__(self, settings: Any, log: Any) -> None:
         self._settings = settings
         self._log = log

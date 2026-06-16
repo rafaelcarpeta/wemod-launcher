@@ -1,31 +1,19 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Main entry point — orchestrates the full launcher lifecycle."""
-
 import sys
 from typing import Any
 
 
 def main() -> int:
-    """Bootstrap → step flow → troubleshooter."""
+    from .core.settings import SettingsManager
 
-    # ── Bootstrap ──────────────────────────────────────────────────
-
-    from .core.paths import PathManager
-
-    path_mgr = PathManager()
+    settings = SettingsManager()
 
     from .logging.event_bus import LogManager
 
-    log = LogManager(path_mgr)
+    log = LogManager(settings)
     log.info("launcher.start", "Launcher started")
-
-    from .core.args import ArgManager
-    from .core.settings import SettingsManager
-
-    args = ArgManager()
-    settings = SettingsManager(args)
 
     from .ui.detect import detect_interface
 
@@ -33,17 +21,15 @@ def main() -> int:
 
     from .core.guards import check_root
 
-    check_root(interface, settings)
+    check_root(settings, log, interface)
 
-    settings.load_config()
+    settings.load_all()
 
-    # ── Step Flow / Troubleshooter ─────────────────────────────────
-
-    exit_code = _run_flow(path_mgr, settings, interface, log)
+    exit_code = _run_flow(settings, log, interface)
 
     from .core.runner import StepRunner
 
-    runner = StepRunner(interface, path_mgr, settings, log)
+    runner = StepRunner(settings, log, interface)
     from .troubleshooter import run_troubleshooter
 
     if runner.run(
@@ -54,15 +40,14 @@ def main() -> int:
     return exit_code
 
 
-def _run_flow(path_mgr: Any, settings: Any, interface: Any, log: Any) -> int:
-    """Download app → prefix setup → sync data → monitor launch."""
+def _run_flow(settings: Any, log: Any, interface: Any) -> int:
     from .core.runner import StepRunner
 
-    runner = StepRunner(interface, path_mgr, settings, log)
+    runner = StepRunner(settings, log, interface)
 
     from .updater import update_if_needed
 
-    if runner.run("updater", "Could not check for updates.", update_if_needed, i=False):
+    if runner.run("updater", "Could not check for updates.", update_if_needed):
         return 1
 
     from .migrations import apply_migrations
@@ -71,8 +56,6 @@ def _run_flow(path_mgr: Any, settings: Any, interface: Any, log: Any) -> int:
         "apply_migrations",
         "Failed to apply data migrations.",
         apply_migrations,
-        p=False,
-        i=False,
     ):
         return 1
 
@@ -88,7 +71,7 @@ def _run_flow(path_mgr: Any, settings: Any, interface: Any, log: Any) -> int:
 
     from .data_sync import sync_app_data
 
-    if runner.run("data_sync", "Could not sync app data.", sync_app_data, i=False):
+    if runner.run("data_sync", "Could not sync app data.", sync_app_data):
         return 1
 
     from .monitor import launch_monitor
