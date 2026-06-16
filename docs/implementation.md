@@ -13,11 +13,9 @@ Relative to `src/wand_launcher/`:
 ./__main__.py                  # python -m wand_launcher → launcher.main()
 ./launcher.py                  # bootstrap → _run_flow() → troubleshooter
 ./core/__init__.py
-./core/args.py                 # ArgManager (sys.argv wrapper)
 ./core/guards.py               # step(), step_code(), check_root
-./core/paths.py                # PathManager (XDG paths)
 ./core/runner.py               # StepRunner (step/step_code convenience)
-./core/settings.py             # SettingsManager (tiered config merge)
+./core/settings.py             # SettingsManager (args + paths + config merge)
 ./logging/__init__.py
 ./logging/event_bus.py         # LogManager with typed emit/subscribe
 ./logging/handlers.py          # File, console, UI log handlers
@@ -60,61 +58,53 @@ Relative to `src/wand_launcher/`:
 
 ## Bootstrap Sequence
 
-### PathManager
+The bootstrap follows this order:
 
-The first object created. It computes XDG paths once:
+1. **SettingsManager** — basic init (arg parsing + base paths)
+2. **LogManager** — takes settings (reads log path from it)
+3. **Interface** — detected from settings
+4. **Root guard** — uses settings + interface
+5. **SettingsManager.load_all()** — config files, env vars, metadata
+6. **StepRunner** — wraps the three remaining objects (settings, interface, log)
 
-- `~/.local/share/wand/` — persistent data (app binary, prefixes, login data, metadata)
-- `~/.config/wand/` — user and auto-generated config files
-- `~/.cache/wand/` — downloads, temp files, logs
+### SettingsManager (First — Basic Init)
 
-No filesystem operations beyond checking if directories exist. Paths are strings, not `pathlib` objects — the manager centralizes all path logic so callers never construct paths themselves.
+The first object created. On init it handles two things that were previously separate modules:
 
-### LogManager
-
-Created with a reference to PathManager so it knows where to write log files. Implements a typed event bus:
-
-- `log.info(type, message)` → shorthand for `log.emit(type, "info", message)`
-- `log.error(type, message)` → shorthand for `log.emit(type, "error", message)`
-- `log.emit(type, level, message)` → full form, used for custom levels
-
-Events are emitted to all subscribed handlers. By default there's a file handler (writes to `~/.cache/wand/launcher.log`) and a console handler. The interface can subscribe its own handler to display events in the UI. The log file header records the launcher version, Python version, platform, and invocation timestamp.
-
-Subscribers can filter by type (e.g. only `launcher.flow.*`), level, or both. The troubleshooter subscribes to error-level events from the flow namespace to pre-populate its issue report.
-
-### ArgManager
-
-Wraps `sys.argv` once, early in bootstrap. Currently exposes a small set of flags:
+**Arg parsing:** Wraps `sys.argv` once. Currently exposes a small set of flags:
 
 - `is_force_root_active` — whether `--force-root` was passed
 - `is_cli` — whether `--cli` was passed
 - `is_no_prompt` — whether `--no-prompt` was passed
 - `has_post_update` — whether the launcher was re-invoked after a self-update
-- Any remaining positional args (used for game exe path, prefix path, etc.)
+- Positional args (game exe path, prefix path, etc.)
 
 Most flags are not yet finalised — future args will be added as settings require them. `--help` support is an optional goal still under evaluation.
 
-ArgManager only parses CLI flags. It does not merge with config files or env vars — that's SettingsManager's job.
+**Path computation:** Computes XDG paths:
 
-### SettingsManager
+- `settings.data_dir` → `~/.local/share/wand/`
+- `settings.config_dir` → `~/.config/wand/`
+- `settings.cache_dir` → `~/.cache/wand/`
+- Derived paths: `log_path`, `bin_dir`, `login_dir`, `metadata_path`, `prefixes_db_path`
 
-The unified settings layer. Construction order matters:
+Paths are strings, not `pathlib` objects. No filesystem operations happen at init.
 
-1. `SettingsManager(args)` — init from ArgManager only (CLI flags parsed but config not loaded yet)
-2. Later, `settings.load_config()` — merges env vars, config files, and game-specific config
+SettingsManager does **not** load config files yet — that happens after the root guard. The basic init provides just enough (args + base paths) for LogManager and interface detection to function.
 
-Merge priority (highest wins):
-CLI args > env vars > game config > global config > hardcoded defaults.
+### LogManager (Second)
 
-**Global config** lives at `~/.config/wand/config.json` — user-editable, contains general launcher settings.
+Created with a reference to **settings** (not a separate PathManager). Reads `settings.log_path` (`~/.cache/wand/launcher.log`) and writes the file header there. Implements a typed event bus:
 
-**Game config** lives at `~/.config/wand/games.json` — maps game paths (used as IDs) to per-game overrides. A game may have no entry at all, partial settings, or full overrides.
+- `log.info(type, message)` → shorthand for `log.emit(type, "info", message)`
+- `log.error(type, message)` → shorthand for `log.emit(type, "error", message)`
+- `log.emit(type, level, message)` → full form, used for custom levels
 
-**Auto-generated metadata** is stored in `~/.local/share/wand/metadata.json` (version, URLs, download links, user agent, etc.). Some of these values are exposed through SettingsManager but are read-only — they can only be changed via the manifest file and are not meant to be edited by users. The settings layer enforces which keys are overridable and which are manifest-only.
+Events are emitted to all subscribed handlers. By default there's a file handler (writes to the log path) and a console handler. The interface can subscribe its own handler to display events in the UI. The log file header records the launcher version, Python version, platform, and invocation timestamp.
 
-Settings are exposed as flat attributes (`settings.is_cli`, `settings.download_url`, etc.) — no nested dict access.
+Subscribers can filter by type (e.g. only `launcher.flow.*`), level, or both. The troubleshooter subscribes to error-level events from the flow namespace to pre-populate its issue report.
 
-### Interface Detection
+### Interface Detection (Third)
 
 `detect_interface(settings, log)` returns either a `GUIInterface` (PyQt6) or `CLIInterface` instance. The decision:
 
@@ -129,18 +119,31 @@ The interface protocol currently includes:
 - `error_msg_and_log(type, text)` — log the type and text, then show the text
 - Additional methods for progress, prompts, etc. (defined in the abstract base)
 
-### Root Guard
+### Root Guard (Fourth)
 
-`check_root(interface, settings)` runs before `settings.load_config()`. If `os.geteuid() == 0` and `settings.is_force_root_active` is False, it shows a message and calls `sys.exit(1)`. The interface is passed so the message is visible in both GUI and CLI mode. Config files are not loaded until after this check passes — no point reading config if we're about to exit.
+`check_root(interface, settings)` runs before `settings.load_all()`. If `os.geteuid() == 0` and `settings.is_force_root_active` is False, it shows a message and calls `sys.exit(1)`. The interface is passed so the message is visible in both GUI and CLI mode. Config files are not loaded until after this check passes — no point reading config if we're about to exit.
 
-### Step Runner
+### SettingsManager.load_all() (Fifth)
 
-After bootstrap, a `StepRunner` is created with the four core objects (path_mgr, settings, interface, log). Every action phase goes through the runner, which wraps `step()` or `step_code()`:
+After the root guard passes, the full settings stack is loaded:
+
+1. **Global config** — `~/.config/wand/config.json`, user-editable, general launcher settings
+2. **Game config** — `~/.config/wand/games.json`, maps game paths (as IDs) to per-game overrides. A game may have no entry at all, partial settings, or full overrides.
+3. **Metadata** — `~/.local/share/wand/metadata.json`, auto-generated (version, URLs, download links, user agent, etc.)
+
+Merge priority (highest wins):
+CLI args > env vars > game config > global config > hardcoded defaults.
+
+Settings are exposed as flat attributes (`settings.is_cli`, `settings.download_url`, etc.) — no nested dict access. Metadata values are available through settings but are read-only — they can only be changed via the manifest and are not meant to be user-edited.
+
+### Step Runner (After Bootstrap)
+
+After bootstrap, a `StepRunner` is created with three core objects (settings, interface, log). Every action phase goes through the runner, which wraps `step()` or `step_code()`:
 
 - `step()` — catches exceptions, calls `interface.error_msg_and_log(type, msg)`, returns True on failure
 - `step_code()` — same but returns `(failed, code)` for phases that produce an exit code
 
-Boolean flags (p, s, i, lg) control which core objects get passed to the phase function. This keeps calls concise and makes the parameter contract explicit at the call site.
+Boolean flags (s, i, lg) control which core objects get passed to the phase function. Phase functions receive `(settings, interface, log)` by default and access paths through the settings object. This keeps calls concise and makes the parameter contract explicit at the call site.
 
 ---
 
