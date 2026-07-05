@@ -29,7 +29,7 @@ echo.
 
 REM Start WeMod.exe and get its PID
 echo Starting WeMod by using %wemodname%.
-start "" %wemodpath%
+start "" %wemodpath% --disable-gpu --no-sandbox --in-process-gpu --disable-gpu-compositing --use-gl=swiftshader
 
 set wemodPID=
 
